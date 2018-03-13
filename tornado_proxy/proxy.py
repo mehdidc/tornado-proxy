@@ -29,7 +29,7 @@ import logging
 import os
 import sys
 import socket
-from urlparse import urlparse
+from urllib.parse import urlparse
 
 import tornado.httpserver
 import tornado.ioloop
@@ -38,9 +38,41 @@ import tornado.web
 import tornado.httpclient
 import tornado.httputil
 
+import re
+
+from datetime import datetime
+
 logger = logging.getLogger('tornado_proxy')
+logger.setLevel(logging.DEBUG)
 
 __all__ = ['ProxyHandler', 'run_proxy']
+
+from config import blocked, work_time
+
+def is_blocked(url):
+    time = datetime.now()
+    if not is_working(time):
+        return False
+    for rule in blocked:
+        if re.search(rule, url):
+            return True
+    return False
+
+def is_working(time):
+    for start, end in work_time:
+        start = to_datetime(start)
+        end = to_datetime(end)
+        print(time, start, end)
+        if start <= time <= end:
+            return True
+    return False
+
+
+def to_datetime(s):
+    today = datetime.today()
+    delta = datetime.strptime(s, "%H:%M")
+    print(s, delta)
+    return datetime(year=today.year, month=today.month, day=today.day, hour=delta.hour, minute=delta.minute, second=delta.second)
 
 
 def get_proxy(url):
@@ -55,6 +87,8 @@ def parse_proxy(proxy):
 
 
 def fetch_request(url, callback, **kwargs):
+    if is_blocked(url):
+        raise tornado.httpclient.HTTPError(500, 'This site is blocked by myself.')
     proxy = get_proxy(url)
     if proxy:
         logger.debug('Forward request via upstream proxy %s', proxy)
@@ -63,7 +97,6 @@ def fetch_request(url, callback, **kwargs):
         host, port = parse_proxy(proxy)
         kwargs['proxy_host'] = host
         kwargs['proxy_port'] = port
-
     req = tornado.httpclient.HTTPRequest(url, **kwargs)
     client = tornado.httpclient.AsyncHTTPClient()
     client.fetch(req, callback, raise_error=False)
@@ -125,6 +158,12 @@ class ProxyHandler(tornado.web.RequestHandler):
     def connect(self):
         logger.debug('Start CONNECT to %s', self.request.uri)
         host, port = self.request.uri.split(':')
+        if is_blocked(host):
+            self.set_status(500)
+            self.write('Blocked site : {}'.format(host))
+            self.finish()
+            return
+
         client = self.request.connection.stream
 
         def read_from_client(data):
@@ -200,5 +239,5 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         port = int(sys.argv[1])
 
-    print ("Starting HTTP proxy on port %d" % port)
+    print("Starting HTTP proxy on port %d" % port)
     run_proxy(port)
